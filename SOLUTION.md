@@ -86,7 +86,7 @@ Changes made:
 1. `.env` created from `.env.example` with a strong `POSTGRES_PASSWORD` (16+ chars, mixed case, digits — URL-safe characters only, since the password gets interpolated into a `postgresql://` connection string; see the Setup Issues section above for why that constraint matters).
 2. Removed the insecure default fallback. Previously `docker-compose.yml` had `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobboard123}` on `postgres`, `jobs-service`, and `applications-service` — meaning the stack would silently start with a well-known, hardcoded weak password if `.env` was ever missing. Changed to `${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}`, Compose's "required variable" syntax: this fails the build/start with a clear error instead of failing open into an insecure default.
 3. Verified: renamed `.env` away and ran `docker compose config` → got `error while interpolating services.postgres.environment.POSTGRES_PASSWORD: required variable POSTGRES_PASSWORD is missing a value: POSTGRES_PASSWORD must be set in .env`. Restored `.env` → `docker compose config` succeeds again.
-4. `.env` is already listed in `.gitignore` (confirmed present at repo root). No `git status` output to show yet since this working copy hasn't been initialized as a git repository (Task 4.1 covers pushing to GitHub).
+4. `.env` is already listed in `.gitignore` (confirmed present at repo root); `git status` after pushing to GitHub confirms neither `.env` nor `secrets/db_password.txt` were ever staged or committed.
 
 **Why committing `.env` to git is a security risk:** a `.env` file holds live credentials (database password here, potentially API keys/tokens elsewhere). Once committed, it's in the repository's history permanently — even deleting the file in a later commit doesn't remove it from history, so anyone with clone access (or anyone who ever forks/mirrors the repo, including automated scrapers that specifically hunt GitHub for leaked `.env` files) can extract the secret. If the repo is or ever becomes public, or if access control on a "private" repo is ever misconfigured, the credential is compromised instantly and the fix requires rotating the secret everywhere it's used, not just removing the file.
 
@@ -322,10 +322,10 @@ Verified with `curl -sI http://localhost | grep -i content-security` → header 
 
 ## Submission Checklist
 
-- [ ] GitHub repository URL
-- [ ] SOLUTION.md complete
-- [ ] Screenshot: app running at `http://localhost`
-- [ ] Screenshot: `docker compose ps` all healthy
-- [ ] Screenshot: successful GitHub Actions pipeline
-- [ ] Screenshot: Docker Hub repository with pushed images
-- [ ] `backup_*.sql` committed
+- [x] GitHub repository URL — [github.com/mendilirmak/lab-job-board](https://github.com/mendilirmak/lab-job-board)
+- [x] SOLUTION.md complete
+- [x] Screenshot: app running at `http://localhost` — `screenshots/app_running.png`
+- [x] Screenshot: `docker compose ps` all healthy — `screenshots/docker_compose_ps.png`
+- [x] Screenshot: successful GitHub Actions pipeline — `screenshots/github_actions.png` ([live run](https://github.com/mendilirmak/lab-job-board/actions/runs/30526394929))
+- [x] Screenshot: Docker Hub repository with pushed images — `screenshots/docker_hub.png`
+- [x] `backup_*.sql` committed — `backup_20260730_071900.sql`
