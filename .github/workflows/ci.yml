@@ -100,7 +100,7 @@ jobs:
           docker load -i /tmp/images/nginx.tar
 
       - name: Scan jobs-service
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lab-job-board-jobs-service:latest
           format: table
@@ -108,7 +108,7 @@ jobs:
           output: trivy-jobs-service.txt
 
       - name: Scan applications-service
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lab-job-board-applications-service:latest
           format: table
@@ -116,7 +116,7 @@ jobs:
           output: trivy-applications-service.txt
 
       - name: Scan frontend
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lab-job-board-frontend:latest
           format: table
@@ -124,7 +124,7 @@ jobs:
           output: trivy-frontend.txt
 
       - name: Scan nginx
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lab-job-board-nginx:latest
           format: table
