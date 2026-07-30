@@ -1,0 +1,235 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY_IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}
+  # CI-only database password for the integration-test job. Never used outside
+  # this ephemeral workflow run, and never committed anywhere.
+  CI_POSTGRES_PASSWORD: Ci_Runner_Test_Pass_2026
+
+jobs:
+  lint-test-python:
+    name: Lint & test — jobs-service (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: jobs-service
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: jobs-service
+        run: ruff check app tests
+
+      - name: Unit tests (pytest, SQLite-backed — no live DB needed)
+        working-directory: jobs-service
+        run: pytest tests/ -v
+
+  lint-test-node:
+    name: Lint & test — Node services (applications-service, frontend)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [applications-service, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.service }}
+        run: npm ci
+
+      - name: Dependency audit (production dependencies only)
+        working-directory: ${{ matrix.service }}
+        run: npm audit --omit=dev --audit-level=high
+
+  build-images:
+    name: Build all images
+    needs: [lint-test-python, lint-test-node]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Save images as artifacts for downstream jobs
+        run: |
+          mkdir -p /tmp/images
+          docker save lab-job-board-jobs-service:latest -o /tmp/images/jobs-service.tar
+          docker save lab-job-board-applications-service:latest -o /tmp/images/applications-service.tar
+          docker save lab-job-board-frontend:latest -o /tmp/images/frontend.tar
+          docker save lab-job-board-nginx:latest -o /tmp/images/nginx.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+          retention-days: 1
+
+  scan-images:
+    name: Trivy vulnerability scan
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+
+      - name: Load images
+        run: |
+          docker load -i /tmp/images/jobs-service.tar
+          docker load -i /tmp/images/applications-service.tar
+          docker load -i /tmp/images/frontend.tar
+          docker load -i /tmp/images/nginx.tar
+
+      - name: Scan jobs-service
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: lab-job-board-jobs-service:latest
+          format: table
+          exit-code: "0"
+          output: trivy-jobs-service.txt
+
+      - name: Scan applications-service
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: lab-job-board-applications-service:latest
+          format: table
+          exit-code: "0"
+          output: trivy-applications-service.txt
+
+      - name: Scan frontend
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: lab-job-board-frontend:latest
+          format: table
+          exit-code: "0"
+          output: trivy-frontend.txt
+
+      - name: Scan nginx
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: lab-job-board-nginx:latest
+          format: table
+          exit-code: "0"
+          output: trivy-nginx.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-*.txt
+
+  integration-test:
+    name: Integration test (full stack)
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+
+      - name: Load images
+        run: |
+          docker load -i /tmp/images/jobs-service.tar
+          docker load -i /tmp/images/applications-service.tar
+          docker load -i /tmp/images/frontend.tar
+          docker load -i /tmp/images/nginx.tar
+
+      - name: Write CI env file
+        run: |
+          echo "POSTGRES_PASSWORD=${CI_POSTGRES_PASSWORD}" >> .env
+          echo "POSTGRES_DB=jobboard" >> .env
+          echo "POSTGRES_USER=postgres" >> .env
+
+      - name: Start stack
+        run: docker compose up -d
+
+      - name: Wait for all services to report healthy
+        run: |
+          for i in $(seq 1 30); do
+            unhealthy=$(docker compose ps --format json | grep -c '"Health":"unhealthy"' || true)
+            starting=$(docker compose ps --format json | grep -c '"Health":"starting"' || true)
+            if [ "$starting" = "0" ] && [ "$unhealthy" = "0" ]; then
+              echo "All services healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for services to become healthy"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: API assertions
+        run: |
+          set -e
+          curl -sf http://localhost/api/jobs/ | grep -q "Senior DevOps Engineer"
+          curl -sf http://localhost/api/applications/ | grep -q "\[\]"
+          curl -sf http://localhost/ | grep -qi "JobBoard"
+          created=$(curl -sf -X POST http://localhost/api/jobs/ \
+            -H "Content-Type: application/json" \
+            -d '{"title":"CI Test Job","description":"Created during CI integration test","company":"CI Inc","location":"GitHub Actions"}')
+          echo "$created" | grep -q "CI Test Job"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  push-to-registry:
+    name: Push images to Docker Hub
+    needs: [scan-images, integration-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images
+
+      - name: Load images
+        run: |
+          docker load -i /tmp/images/jobs-service.tar
+          docker load -i /tmp/images/applications-service.tar
+          docker load -i /tmp/images/frontend.tar
+          docker load -i /tmp/images/nginx.tar
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          for svc in jobs-service applications-service frontend nginx; do
+            docker tag lab-job-board-$svc:latest ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:latest
+            docker tag lab-job-board-$svc:latest ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:${{ github.sha }}
+            docker push ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:latest
+            docker push ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:${{ github.sha }}
+          done
