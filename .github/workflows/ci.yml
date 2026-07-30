@@ -234,3 +234,76 @@ jobs:
             docker push ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:latest
             docker push ${{ secrets.DOCKERHUB_USERNAME }}/jobboard-$svc:${{ github.sha }}
           done
+
+  # ──────────────────────────────────────────────────────────────
+  # NOTE: this job is written to the Part-2 Kubernetes lab spec but
+  # has never actually executed — it needs KUBECONFIG_BASE64 pointing
+  # at a real, network-reachable cluster (a cloud-managed cluster, or
+  # a self-hosted one with an exposed API server). This lab's cluster
+  # is local minikube on a developer machine; a GitHub-hosted runner
+  # has no route to it (no tunnel survives past the job), so there is
+  # no KUBECONFIG_BASE64 secret configured and this job will simply
+  # never run its `if` condition true in this repository. See
+  # SOLUTION-k8s.md Task 6 for what a real target would require.
+  # ──────────────────────────────────────────────────────────────
+  deploy-to-k8s:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: push-to-registry
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && secrets.KUBECONFIG_BASE64 != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG_BASE64 }}" | base64 -d > kubeconfig.yml
+
+      - name: Update jobs-service image
+        run: |
+          export KUBECONFIG=kubeconfig.yml
+          kubectl set image deployment/jobs-service \
+            jobs-service=${{ secrets.DOCKERHUB_USERNAME }}/jobboard-jobs-service:${{ github.sha }} \
+            -n jobboard
+          kubectl rollout status deployment/jobs-service -n jobboard --timeout=120s
+
+      - name: Update applications-service image
+        run: |
+          export KUBECONFIG=kubeconfig.yml
+          kubectl set image deployment/applications-service \
+            applications-service=${{ secrets.DOCKERHUB_USERNAME }}/jobboard-applications-service:${{ github.sha }} \
+            -n jobboard
+          kubectl rollout status deployment/applications-service -n jobboard --timeout=120s
+
+      - name: Update frontend image
+        run: |
+          export KUBECONFIG=kubeconfig.yml
+          kubectl set image deployment/frontend \
+            frontend=${{ secrets.DOCKERHUB_USERNAME }}/jobboard-frontend:${{ github.sha }} \
+            -n jobboard
+          kubectl rollout status deployment/frontend -n jobboard --timeout=120s
+
+      - name: Kubernetes smoke test
+        run: |
+          export KUBECONFIG=kubeconfig.yml
+
+          # Fail if any pod in the namespace is not Running
+          not_running=$(kubectl get pods -n jobboard --no-headers | grep -v " Running " || true)
+          if [ -n "$not_running" ]; then
+            echo "Pods not in Running state:"
+            echo "$not_running"
+            exit 1
+          fi
+
+          # Fail if either API's /health endpoint doesn't return 200
+          kubectl run smoke-test --rm -i --restart=Never --image=curlimages/curl -n jobboard -- \
+            sh -c '
+              set -e
+              code=$(curl -s -o /dev/null -w "%{http_code}" http://jobs-service:8000/health)
+              [ "$code" = "200" ] || { echo "jobs-service /health returned $code"; exit 1; }
+              code=$(curl -s -o /dev/null -w "%{http_code}" http://applications-service:3001/health)
+              [ "$code" = "200" ] || { echo "applications-service /health returned $code"; exit 1; }
+              echo "Both /health endpoints returned 200"
+            '

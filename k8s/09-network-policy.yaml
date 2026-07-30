@@ -1,0 +1,33 @@
+# ============================================================
+# NetworkPolicy — restrict inbound traffic to postgres
+#
+# Only jobs-service and applications-service pods may connect to
+# postgres on port 5432. All other ingress traffic to postgres pods
+# is denied by default once any NetworkPolicy selects them (a pod
+# with no matching NetworkPolicy has no restrictions; the moment one
+# NetworkPolicy's podSelector matches it, only what's explicitly
+# allowed gets through — everything else is implicitly denied).
+# ============================================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: jobboard
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: jobs-service
+        - podSelector:
+            matchLabels:
+              app: applications-service
+      ports:
+        - protocol: TCP
+          port: 5432

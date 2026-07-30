@@ -6,25 +6,33 @@
 #   OR: helm install ingress-nginx ingress-nginx/ingress-nginx
 #
 # Traffic flow:
-#   /api/jobs(/|$)(.*) → jobs-service:8000      → /jobs/$2
-#   /api/applications(/|$)(.*) → applications-service:3001 → /applications/$2
-#   /                  → frontend:80            → /
+#   /api/jobs, /api/jobs/            → jobs-service:8000      → /jobs
+#   /api/jobs/{id}                   → jobs-service:8000      → /jobs/{id}
+#   /api/applications, /api/applications/ → applications-service:3001 → /applications
+#   /api/applications/{id...}        → applications-service:3001 → /applications/{id...}
+#   /                                → frontend:80            → /
 #
-# NOTE: Each Ingress uses a different rewrite-target annotation,
-#       so they must be separate objects (nginx ingress limitation).
+# NOTE: nginx ingress only supports ONE rewrite-target value per Ingress
+#       object. The jobs-service/applications-service FastAPI/Express
+#       routes are registered WITHOUT a trailing slash for the collection
+#       endpoint (e.g. "/jobs", not "/jobs/") but WITH one for item routes
+#       (e.g. "/jobs/{id}"). A single rewrite-target can't satisfy both
+#       shapes at once (see SOLUTION-k8s.md Task 2.2), so each service gets
+#       TWO Ingress objects: one fixed-target rule for the bare collection
+#       path, one capture-group rule for item-level paths.
 # ============================================================
 
-# ── 1. Jobs Service Ingress ───────────────────────────────────
+# ── 1a. Jobs Service Ingress — collection endpoint (/api/jobs[/]) ──
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: jobs-ingress
+  name: jobs-ingress-collection
   namespace: jobboard
   labels:
     app.kubernetes.io/name: jobs-ingress
   annotations:
     nginx.ingress.kubernetes.io/use-regex:       "true"
-    nginx.ingress.kubernetes.io/rewrite-target:  /jobs/$2
+    nginx.ingress.kubernetes.io/rewrite-target:  /jobs
     nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
     nginx.ingress.kubernetes.io/limit-rps:       "30"
 spec:
@@ -32,7 +40,7 @@ spec:
   rules:
     - http:
         paths:
-          - path: /api/jobs(/|$)(.*)
+          - path: /api/jobs/?$
             pathType: ImplementationSpecific
             backend:
               service:
@@ -41,17 +49,17 @@ spec:
                   number: 8000
 
 ---
-# ── 2. Applications Service Ingress ──────────────────────────
+# ── 1b. Jobs Service Ingress — item endpoints (/api/jobs/{id}) ──
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: applications-ingress
+  name: jobs-ingress-item
   namespace: jobboard
   labels:
-    app.kubernetes.io/name: applications-ingress
+    app.kubernetes.io/name: jobs-ingress
   annotations:
     nginx.ingress.kubernetes.io/use-regex:       "true"
-    nginx.ingress.kubernetes.io/rewrite-target:  /applications/$2
+    nginx.ingress.kubernetes.io/rewrite-target:  /jobs/$1
     nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
     nginx.ingress.kubernetes.io/limit-rps:       "30"
 spec:
@@ -59,7 +67,61 @@ spec:
   rules:
     - http:
         paths:
-          - path: /api/applications(/|$)(.*)
+          - path: /api/jobs/(.+)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: jobs-service
+                port:
+                  number: 8000
+
+---
+# ── 2a. Applications Service Ingress — collection endpoint ──
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: applications-ingress-collection
+  namespace: jobboard
+  labels:
+    app.kubernetes.io/name: applications-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex:       "true"
+    nginx.ingress.kubernetes.io/rewrite-target:  /applications
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    nginx.ingress.kubernetes.io/limit-rps:       "30"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/applications/?$
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: applications-service
+                port:
+                  number: 3001
+
+---
+# ── 2b. Applications Service Ingress — item endpoints ──
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: applications-ingress-item
+  namespace: jobboard
+  labels:
+    app.kubernetes.io/name: applications-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex:       "true"
+    nginx.ingress.kubernetes.io/rewrite-target:  /applications/$1
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+    nginx.ingress.kubernetes.io/limit-rps:       "30"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /api/applications/(.+)
             pathType: ImplementationSpecific
             backend:
               service:
